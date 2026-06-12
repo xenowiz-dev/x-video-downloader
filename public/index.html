@@ -1,0 +1,276 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>xvid — grab clips from X</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Inter:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --ink: #15131c;
+    --panel: #1d1a27;
+    --line: #2c2839;
+    --fg: #e8e4f0;
+    --dim: #8d87a8;
+    --amber: #ffb454;
+    --amber-deep: #c77c1e;
+    --cyan: #74dfe0;
+    --red: #ff7a8a;
+    --mono: "IBM Plex Mono", ui-monospace, monospace;
+    --sans: "Inter", system-ui, sans-serif;
+  }
+  * { box-sizing: border-box; margin: 0; }
+  html, body { height: 100%; }
+  body {
+    background: var(--ink);
+    color: var(--fg);
+    font-family: var(--mono);
+    display: flex;
+    justify-content: center;
+    padding: 48px 20px;
+  }
+  main { width: 100%; max-width: 640px; }
+
+  /* logotype built from block glyphs */
+  .logo {
+    font-size: 13px;
+    line-height: 1.15;
+    color: var(--amber);
+    white-space: pre;
+    user-select: none;
+    margin-bottom: 6px;
+  }
+  .tagline {
+    font-family: var(--sans);
+    color: var(--dim);
+    font-size: 13px;
+    margin-bottom: 36px;
+  }
+  .tagline em { color: var(--amber); font-style: normal; }
+
+  /* prompt-style input */
+  .prompt {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    padding: 14px 16px;
+    transition: border-color .15s;
+  }
+  .prompt:focus-within { border-color: var(--amber-deep); }
+  .prompt .glyph { color: var(--amber); font-weight: 600; }
+  .prompt input {
+    flex: 1;
+    background: none;
+    border: none;
+    outline: none;
+    color: var(--fg);
+    font: 500 14px/1 var(--mono);
+    caret-color: var(--amber);
+  }
+  .prompt input::placeholder { color: #4f4a63; }
+  .prompt button {
+    font: 600 12px var(--mono);
+    letter-spacing: .08em;
+    color: var(--ink);
+    background: var(--amber);
+    border: none;
+    border-radius: 4px;
+    padding: 8px 14px;
+    cursor: pointer;
+  }
+  .prompt button:hover { background: #ffc676; }
+  .prompt button:disabled { background: var(--line); color: var(--dim); cursor: default; }
+  .prompt button:focus-visible,
+  .quality button:focus-visible,
+  a:focus-visible { outline: 2px solid var(--cyan); outline-offset: 2px; }
+
+  /* ANSI status line — the signature */
+  .statusline {
+    margin: 18px 2px 0;
+    font-size: 13px;
+    min-height: 1.4em;
+    white-space: pre-wrap;
+    color: var(--dim);
+  }
+  .statusline .blocks { color: var(--amber); letter-spacing: 1px; }
+  .statusline.err { color: var(--red); }
+  .statusline.ok { color: var(--cyan); }
+
+  /* result card */
+  .card {
+    margin-top: 28px;
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    overflow: hidden;
+    display: none;
+  }
+  .card.show { display: block; }
+  .card img { width: 100%; display: block; border-bottom: 1px solid var(--line); }
+  .card .meta { padding: 16px 18px 6px; }
+  .card .title {
+    font-family: var(--sans);
+    font-size: 14px;
+    line-height: 1.45;
+    color: var(--fg);
+  }
+  .card .sub { font-size: 12px; color: var(--dim); margin-top: 6px; }
+
+  .quality { display: flex; flex-wrap: wrap; gap: 8px; padding: 14px 18px 18px; }
+  .quality button {
+    font: 500 12px var(--mono);
+    color: var(--amber);
+    background: none;
+    border: 1px solid var(--amber-deep);
+    border-radius: 4px;
+    padding: 7px 12px;
+    cursor: pointer;
+    transition: background .12s, color .12s;
+  }
+  .quality button:hover { background: var(--amber); color: var(--ink); }
+  .quality button .sz { color: var(--dim); margin-left: 6px; }
+  .quality button:hover .sz { color: var(--ink); }
+
+  footer {
+    margin-top: 44px;
+    font-family: var(--sans);
+    font-size: 11px;
+    color: #5a5470;
+    line-height: 1.6;
+  }
+
+  @media (max-width: 480px) {
+    body { padding: 28px 14px; }
+    .prompt { flex-wrap: wrap; }
+    .prompt button { width: 100%; }
+  }
+  @media (prefers-reduced-motion: no-preference) {
+    .blocks { transition: none; } /* blocks animate via JS frames, not CSS */
+  }
+</style>
+</head>
+<body>
+<main>
+  <div class="logo">▓█ █▓ █  █ █ ▓▓█
+ ▓█▓  █▓ █ █ █  █
+▓█ █▓  ██  █ █▓▓█</div>
+  <p class="tagline">paste an <em>x.com</em> post URL, pick a quality, get the mp4. only grab what you have the rights to.</p>
+
+  <div class="prompt">
+    <span class="glyph" aria-hidden="true">&gt;</span>
+    <input id="url" type="url" placeholder="https://x.com/user/status/…" autocomplete="off" spellcheck="false" aria-label="X post URL">
+    <button id="go">PROBE</button>
+  </div>
+
+  <div class="statusline" id="status" role="status" aria-live="polite"></div>
+
+  <section class="card" id="card">
+    <img id="thumb" alt="" hidden>
+    <div class="meta">
+      <div class="title" id="title"></div>
+      <div class="sub" id="sub"></div>
+    </div>
+    <div class="quality" id="quality"></div>
+  </section>
+
+  <footer>
+    runs locally · extraction via yt-dlp · nothing leaves this machine except the request to X.<br>
+    respect creators: X's terms prohibit downloading content without permission.
+  </footer>
+</main>
+
+<script>
+const $ = id => document.getElementById(id);
+const urlInput = $("url"), goBtn = $("go"), status = $("status");
+const card = $("card"), thumb = $("thumb"), title = $("title"), sub = $("sub"), quality = $("quality");
+
+const FRAMES = ["░░░░░░░░", "▒░░░░░░░", "▓▒░░░░░░", "█▓▒░░░░░", "░█▓▒░░░░", "░░█▓▒░░░", "░░░█▓▒░░", "░░░░█▓▒░", "░░░░░█▓▒", "░░░░░░█▓", "░░░░░░░█"];
+let spinTimer = null, frame = 0;
+const reduceMotion = matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+function spin(msg) {
+  stopSpin();
+  status.className = "statusline";
+  if (reduceMotion) { status.textContent = msg + " …"; return; }
+  spinTimer = setInterval(() => {
+    frame = (frame + 1) % FRAMES.length;
+    status.innerHTML = '<span class="blocks">' + FRAMES[frame] + "</span>  " + msg;
+  }, 90);
+}
+function stopSpin() { clearInterval(spinTimer); spinTimer = null; }
+function say(msg, cls) { stopSpin(); status.className = "statusline " + (cls || ""); status.textContent = msg; }
+
+function fmtSize(b) {
+  if (!b) return "";
+  const mb = b / 1048576;
+  return mb >= 1 ? mb.toFixed(1) + " MB" : (b / 1024).toFixed(0) + " KB";
+}
+function fmtDur(s) {
+  if (!s) return "";
+  const m = Math.floor(s / 60), r = Math.round(s % 60);
+  return m + ":" + String(r).padStart(2, "0");
+}
+
+async function probe() {
+  const url = urlInput.value.trim();
+  if (!url) { say("enter a URL first.", "err"); return; }
+  card.classList.remove("show");
+  goBtn.disabled = true;
+  spin("resolving post");
+  try {
+    const r = await fetch("/api/probe", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ url }),
+    });
+    const data = await r.json();
+    if (!r.ok) throw new Error(data.error || "probe failed");
+
+    title.textContent = data.title;
+    sub.textContent = [data.uploader && "@" + data.uploader.replace(/^@/, ""), fmtDur(data.duration)].filter(Boolean).join(" · ");
+    if (data.thumbnail) { thumb.src = data.thumbnail; thumb.hidden = false; } else { thumb.hidden = true; }
+
+    quality.innerHTML = "";
+    const fmts = data.formats.length ? data.formats : [{ id: "", label: "best available", filesize: null }];
+    for (const f of fmts) {
+      const b = document.createElement("button");
+      b.innerHTML = f.label + (f.filesize ? '<span class="sz">' + fmtSize(f.filesize) + "</span>" : "");
+      b.addEventListener("click", () => download(url, f.id, f.label));
+      quality.appendChild(b);
+    }
+    card.classList.add("show");
+    say("found it — pick a quality.", "ok");
+  } catch (e) {
+    say(e.message, "err");
+  } finally {
+    goBtn.disabled = false;
+  }
+}
+
+function download(url, formatId, label) {
+  spin("downloading " + label + " — browser will prompt to save");
+  const q = new URLSearchParams({ url });
+  if (formatId) q.set("format", formatId);
+  // Navigate a hidden iframe so fetch streaming isn't needed; the
+  // Content-Disposition header triggers the save dialog.
+  let f = document.getElementById("dlframe");
+  if (!f) {
+    f = document.createElement("iframe");
+    f.id = "dlframe";
+    f.style.display = "none";
+    document.body.appendChild(f);
+  }
+  f.src = "/api/download?" + q.toString();
+  // We can't observe iframe download completion reliably; settle the line after a beat.
+  setTimeout(() => say("transfer handed to browser — check your downloads.", "ok"), 4000);
+}
+
+goBtn.addEventListener("click", probe);
+urlInput.addEventListener("keydown", e => { if (e.key === "Enter") probe(); });
+</script>
+</body>
+</html>
