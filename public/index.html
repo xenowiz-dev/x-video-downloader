@@ -135,6 +135,33 @@
   .quality button .sz { color: var(--dim); margin-left: 6px; }
   .quality button:hover .sz { color: var(--ink); }
 
+  /* audio-only row — cyan to read as a different kind of output */
+  .audio {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+    padding: 0 18px 18px;
+    border-top: 1px solid var(--line);
+    padding-top: 14px;
+  }
+  .audio[hidden] { display: none; }
+  .audio .lbl { font-size: 11px; color: var(--dim); letter-spacing: .08em; margin-right: 4px; }
+  .audio button {
+    font: 500 12px var(--mono);
+    color: var(--cyan);
+    background: none;
+    border: 1px solid #2f7a7b;
+    border-radius: 4px;
+    padding: 7px 12px;
+    cursor: pointer;
+    transition: background .12s, color .12s;
+  }
+  .audio button:hover { background: var(--cyan); color: var(--ink); }
+  .audio button:focus-visible { outline: 2px solid var(--amber); outline-offset: 2px; }
+  .audio button .hint { color: var(--dim); margin-left: 6px; }
+  .audio button:hover .hint { color: var(--ink); }
+
   footer {
     margin-top: 44px;
     font-family: var(--sans);
@@ -158,7 +185,7 @@
   <div class="logo">▓█ █▓ █  █ █ ▓▓█
  ▓█▓  █▓ █ █ █  █
 ▓█ █▓  ██  █ █▓▓█</div>
-  <p class="tagline">paste an <em>x.com</em> post URL, pick a quality, get the mp4. only grab what you have the rights to.</p>
+  <p class="tagline">paste an <em>x.com</em> post URL, pick a quality, get the mp4 — or just the audio. only grab what you have the rights to.</p>
 
   <div class="prompt">
     <span class="glyph" aria-hidden="true">&gt;</span>
@@ -175,6 +202,7 @@
       <div class="sub" id="sub"></div>
     </div>
     <div class="quality" id="quality"></div>
+    <div class="audio" id="audio" hidden></div>
   </section>
 
   <footer>
@@ -186,7 +214,8 @@
 <script>
 const $ = id => document.getElementById(id);
 const urlInput = $("url"), goBtn = $("go"), status = $("status");
-const card = $("card"), thumb = $("thumb"), title = $("title"), sub = $("sub"), quality = $("quality");
+const card = $("card"), thumb = $("thumb"), title = $("title"), sub = $("sub"), quality = $("quality"), audio = $("audio");
+const AUDIO_HINT = { m4a: "aac · no re-encode", mp3: "re-encoded" };
 
 const FRAMES = ["░░░░░░░░", "▒░░░░░░░", "▓▒░░░░░░", "█▓▒░░░░░", "░█▓▒░░░░", "░░█▓▒░░░", "░░░█▓▒░░", "░░░░█▓▒░", "░░░░░█▓▒", "░░░░░░█▓", "░░░░░░░█"];
 let spinTimer = null, frame = 0;
@@ -239,11 +268,27 @@ async function probe() {
     for (const f of fmts) {
       const b = document.createElement("button");
       b.innerHTML = f.label + (f.filesize ? '<span class="sz">' + fmtSize(f.filesize) + "</span>" : "");
-      b.addEventListener("click", () => download(url, f.id, f.label));
+      b.addEventListener("click", () => download(url, { format: f.id }, f.label));
       quality.appendChild(b);
     }
+
+    audio.innerHTML = "";
+    const afmts = data.audio || [];
+    if (afmts.length) {
+      const l = document.createElement("span");
+      l.className = "lbl";
+      l.textContent = "AUDIO ONLY";
+      audio.appendChild(l);
+      for (const a of afmts) {
+        const b = document.createElement("button");
+        b.innerHTML = a + (AUDIO_HINT[a] ? '<span class="hint">' + AUDIO_HINT[a] + "</span>" : "");
+        b.addEventListener("click", () => download(url, { audio: a }, "audio (" + a + ")"));
+        audio.appendChild(b);
+      }
+    }
+    audio.hidden = !afmts.length;
     card.classList.add("show");
-    say("found it — pick a quality.", "ok");
+    say(afmts.length ? "found it — pick a quality, or grab just the audio." : "found it — pick a quality.", "ok");
   } catch (e) {
     say(e.message, "err");
   } finally {
@@ -251,10 +296,11 @@ async function probe() {
   }
 }
 
-function download(url, formatId, label) {
+function download(url, opts, label) {
   spin("downloading " + label + " — browser will prompt to save");
   const q = new URLSearchParams({ url });
-  if (formatId) q.set("format", formatId);
+  if (opts.format) q.set("format", opts.format);
+  if (opts.audio) q.set("audio", opts.audio);
   // Navigate a hidden iframe so fetch streaming isn't needed; the
   // Content-Disposition header triggers the save dialog.
   let f = document.getElementById("dlframe");

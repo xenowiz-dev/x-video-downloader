@@ -24,6 +24,10 @@ function validUrl(u) {
   return typeof u === "string" && X_URL.test(u.trim());
 }
 
+// Audio-only output containers we support. m4a is a lossless remux of X's AAC
+// track (fast, no quality loss); mp3 re-encodes for compatibility.
+const AUDIO_FORMATS = new Set(["m4a", "mp3"]);
+
 // --- Probe: fetch metadata + available formats -------------------------
 app.post("/api/probe", (req, res) => {
   const url = (req.body.url || "").trim();
@@ -42,16 +46,37 @@ app.post("/api/probe", (req, res) => {
       }
       try {
         const info = JSON.parse(stdout);
-        const formats = (info.formats || [])
-          .filter(f => f.vcodec && f.vcodec !== "none" && f.ext === "mp4")
-          .map(f => ({
-            id: f.format_id,
-            width: f.width,
-            height: f.height,
-            label: f.height ? `${f.height}p` : f.format_id,
-            filesize: f.filesize || f.filesize_approx || null,
-          }))
-          .sort((a, b) => (b.height || 0) - (a.height || 0));
+        const all = info.formats || [];
+
+        // X exposes two families of video formats:
+        //   http-<tbr>  progressive mp4, audio muxed in (yt-dlp leaves vcodec/acodec unset)
+        //   hls-<tbr>   video-only HLS variant (acodec === "none"), audio in a separate hls-audio-* stream
+        // Keep anything that has video, remember whether it carries audio, then
+        // collapse to one entry per resolution — preferring the muxed one.
+        const byHeight = new Map();
+        for (const f of all) {
+          if (f.vcodec === "none" || f.ext !== "mp4") continue;
+          const hasAudio = f.acodec !== "none";
+          const key = f.height || f.format_id;
+          const cur = byHeight.get(key);
+          const better = !cur || (hasAudio && !cur.hasAudio) || (hasAudio === cur.hasAudio && (f.tbr || 0) > (cur.tbr || 0));
+          if (better) {
+            byHeight.set(key, {
+              id: f.format_id,
+              width: f.width,
+              height: f.height,
+              tbr: f.tbr,
+              hasAudio,
+              label: f.height ? `${f.height}p` : f.format_id,
+              filesize: f.filesize || f.filesize_approx || null,
+            });
+          }
+        }
+        const formats = [...byHeight.values()]
+          .sort((a, b) => (b.height || 0) - (a.height || 0))
+          .map(({ tbr, ...rest }) => rest);
+
+        const hasAudioStream = all.some(f => f.acodec && f.acodec !== "none");
 
         res.json({
           id: info.id,
@@ -60,6 +85,7 @@ app.post("/api/probe", (req, res) => {
           duration: info.duration || null,
           thumbnail: info.thumbnail || null,
           formats,
+          audio: hasAudioStream ? [...AUDIO_FORMATS] : [],
         });
       } catch {
         res.status(500).json({ error: "Could not parse extractor output." });
@@ -69,26 +95,42 @@ app.post("/api/probe", (req, res) => {
 });
 
 // --- Download: pull to temp file, stream to client, clean up -----------
+// GET /api/download?url=&format=<id>          → mp4 with audio merged in
+// GET /api/download?url=&audio=m4a|mp3        → audio track only
 app.get("/api/download", (req, res) => {
   const url = (req.query.url || "").trim();
   const formatId = (req.query.format || "").trim();
+  const audio = (req.query.audio || "").trim().toLowerCase();
   if (!validUrl(url)) return res.status(400).send("Invalid URL.");
   if (formatId && !/^[\w.+-]+$/.test(formatId)) return res.status(400).send("Invalid format id.");
+  if (audio && !AUDIO_FORMATS.has(audio)) return res.status(400).send("Invalid audio format.");
 
   const token = crypto.randomBytes(8).toString("hex");
   const outTemplate = path.join(TMP, `${token}.%(ext)s`);
 
-  // Pin format to mp4; merge audio if the chosen video stream is video-only.
-  const fmt = formatId ? `${formatId}+bestaudio[ext=m4a]/${formatId}/best[ext=mp4]/best` : "best[ext=mp4]/best";
+  let args;
+  if (audio) {
+    // Grab the best audio stream and extract/remux it. -x runs ffmpeg; for m4a
+    // the AAC track is copied as-is, for mp3 it's re-encoded.
+    args = [
+      "-f", "bestaudio/best",
+      "-x", "--audio-format", audio,
+      "--audio-quality", "0",
+    ];
+  } else {
+    // If the chosen video stream is video-only (X's HLS variants), merge in the
+    // best audio stream — whatever container it comes in. X serves its HLS audio
+    // with ext=mp4, so filtering bestaudio on ext=m4a matched nothing and the
+    // old selector silently fell back to a muted video. The [acodec=none]
+    // guard keeps progressive (already-muxed) formats from getting a second
+    // audio track mapped in.
+    const fmt = formatId
+      ? `${formatId}[acodec=none]+bestaudio/${formatId}/best[ext=mp4]/best`
+      : "bestvideo[ext=mp4]+bestaudio/best[ext=mp4]/best";
+    args = ["-f", fmt, "--merge-output-format", "mp4"];
+  }
 
-  const args = [
-    "-f", fmt,
-    "--merge-output-format", "mp4",
-    "--no-playlist",
-    "--no-warnings",
-    "-o", outTemplate,
-    url,
-  ];
+  args.push("--no-playlist", "--no-warnings", "-o", outTemplate, url);
 
   const proc = spawn("yt-dlp", args);
   let stderrBuf = "";
@@ -99,13 +141,17 @@ app.get("/api/download", (req, res) => {
       const msg = stderrBuf.split("\n").find(l => l.includes("ERROR")) || "Download failed.";
       return res.status(502).send(msg.replace(/^ERROR:\s*/, ""));
     }
-    const file = fs.readdirSync(TMP).find(f => f.startsWith(token + "."));
+    // With -x the intermediate file is removed by yt-dlp; only the final
+    // container should remain. Prefer the requested extension if several exist.
+    const candidates = fs.readdirSync(TMP).filter(f => f.startsWith(token + "."));
+    const file = candidates.find(f => audio && f.endsWith("." + audio)) || candidates[0];
     if (!file) return res.status(500).send("Output file missing.");
     const full = path.join(TMP, file);
-    const ext = path.extname(file) || ".mp4";
+    const ext = path.extname(file) || (audio ? "." + audio : ".mp4");
+    const base = audio ? "x-audio" : "x-video";
 
-    res.download(full, `x-video-${Date.now()}${ext}`, () => {
-      fs.unlink(full, () => {});
+    res.download(full, `${base}-${Date.now()}${ext}`, () => {
+      for (const c of candidates) fs.unlink(path.join(TMP, c), () => {});
     });
   });
 
