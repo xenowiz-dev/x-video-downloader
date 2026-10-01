@@ -44,8 +44,21 @@ app.post("/api/probe", (req, res) => {
         const msg = (stderr || err.message || "").split("\n").find(l => l.includes("ERROR")) || "Extraction failed.";
         return res.status(502).json({ error: msg.replace(/^ERROR:\s*/, "") });
       }
+      // yt-dlp -j prints one JSON object per line; a post carrying several
+      // videos arrives as multiple entries (--no-playlist does not collapse
+      // those). Parse the first entry — the card below shows a single video.
+      let info;
       try {
-        const info = JSON.parse(stdout);
+        const line = stdout.split("\n").map(l => l.trim()).find(Boolean);
+        if (!line) throw new Error("extractor returned no output");
+        info = JSON.parse(line);
+      } catch (e) {
+        console.error("[probe] could not parse yt-dlp output:", e.message);
+        console.error("[probe] stdout head:", JSON.stringify(stdout.slice(0, 300)));
+        return res.status(500).json({ error: `Could not parse extractor output: ${e.message}` });
+      }
+
+      try {
         const all = info.formats || [];
 
         // X exposes two families of video formats:
@@ -87,8 +100,9 @@ app.post("/api/probe", (req, res) => {
           formats,
           audio: hasAudioStream ? [...AUDIO_FORMATS] : [],
         });
-      } catch {
-        res.status(500).json({ error: "Could not parse extractor output." });
+      } catch (e) {
+        console.error("[probe] failed building format list:", e);
+        res.status(500).json({ error: `Could not read format list: ${e.message}` });
       }
     }
   );
